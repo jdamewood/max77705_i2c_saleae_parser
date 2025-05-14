@@ -26,7 +26,8 @@ Register | Name | Raw | Decoded
 - **Reverse engineering** of power management behavior in consumer electronics.
 
 ## Usage ```
-python3 max77705parser.py <register_dump.csv>```
+python3 max77705parser.py <register_dump.csv>
+```
 
 
 ## Requirements
