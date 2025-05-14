@@ -25,7 +25,8 @@ Register | Name | Raw | Decoded
 - **Automated test logs** for hardware validation.
 - **Reverse engineering** of power management behavior in consumer electronics.
 
-## Usage ```
+## Usage
+```
 python3 max77705parser.py <register_dump.csv>
 ```
 
