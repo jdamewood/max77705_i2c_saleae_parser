@@ -14,20 +14,18 @@
 -------------------- Fuel Gauge --------------------
 Register   | Name                 | Raw      | Decoded
 --------------------------------------------------
-0x0        | STATUS_REG           | 0x8000   | Status: Status: POR=0, Imn=0, Imx=0, Vmn=0, Vmx=0, Tmn=0, Tmx=0
-0x1        | VALRT_THRESHOLD_REG  | 0xa0ff   | Voltage Alert: Max=3200 mV, Min=5100 mV
-0x2        | TALRT_THRESHOLD_REG  | 0x807f   | Temperature Alert: Max=0.5°C, Min=0.5°C
-0x3        | SALRT_THRESHOLD_REG  | 0x1ff    | SOC Alert: Max=0.0%, Min=1.0%
-0x5        | REMCAP_REP_REG       | 0xdf10   | Reported Remaining Capacity: 28552.0 mAh
-0x6        | SOCREP_REG           | 0x2460   | Reported State of Charge: 36.4%
-0x8        | TEMPERATURE_REG      | 0xcd1d   | Temperature: -38.4°C (Raw: 0xCD1D)
-0x9        | VCELL_REG            | 0x62da   | Cell Voltage: 1977.03 mV
-0xa        | CURRENT_REG          | 0xa600   | Current: -36000.0 µA
-0xb        | AVG_CURRENT_REG      | 0xa200   | Average Current: -37600.0 µA
+0x0        | STATUS_REG           | 0x8000   | Status: POR=0, Imn=0, Imx=0, Vmn=0, Vmx=0, Tmn=0, Tmx=0
+0x2        | VCELL_REG            | 0x807f   | Cell Voltage: 2569.92 mV
+0x4        | SOC_STATUS           | 0x19     | SOC = 0.0%  Flags: DataReady
+0x5        | REMCAP_REP_REG       | 0xdf10   | Reported Remaining Capacity: 28552.0 mAh  ⚠️ capacity 28552 mAh exceeds typical range
+0x6        | SOCREP_REG           | 0x2460   | Reported SOC: 36.4%
+0x8        | VERSION_REG          | 0xcd1d   | Version: 0xCD1D
+0xa        | HIBRT_REG            | 0xa600   | HibRt: 0xA600
+0xc        | CONFIG_REG           | 0x400    | Sleep=4, Alert=0% (Voltage change)
 0xd        | SOCMIX_REG           | 0x7e5f   | Mixed SOC: 100.0%
 0xe        | SOCAV_REG            | 0x3460   | Average SOC: 52.4%
 0xf        | REMCAP_MIX_REG       | 0xe110   | Mixed Remaining Capacity: 28808.0 mAh
-0x10       | FULLCAP_REG          | 0x8911   | Full Capacity: 17544.5 mAh
+0x10       | FULLCAP_REG          | 0x8911   | Full Capacity: 17544.5 mAh  ⚠️ capacity 17544 mAh exceeds typical range
 ```
 ## Use Cases
 ```
