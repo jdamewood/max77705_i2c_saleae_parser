@@ -34,7 +34,7 @@ Both scripts support:
 
 ## Usage
 1 Real‑time decoding with Saleae MCP
-- Open Saleae Logic 2, start the MCP server (Extensions → MCP Server).
+1 Open Saleae Logic 2, start the MCP server (Extensions → MCP Server).
 - Edit the script variables:
 -- CAPTURE_FILE – path to your .sal file.
 -- BUSES – define SDA/SCL channel numbers for each I2C bus.
