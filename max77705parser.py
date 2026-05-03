@@ -1,115 +1,149 @@
-#Made with the help of Grok and https://opensource.samsung.com/main source file for SM-G996U
-
+#!/usr/bin/env python3
+"""
+MAX77705 / MAX77804 I2C CSV Summary Parser
+Corrected for MAX17050 fuel gauge with configurable sense resistor.
+"""
 
 import argparse
 import csv
 from collections import defaultdict
 from colorama import Fore, Style, init
 
-# Initialize colorama for color output
 init(autoreset=True)
 
-FG_RESISTOR = 0.01  # 10 mΩ
+# ----------------------------------------------------------------------
+# USER CONFIGURABLE: Sense resistor value in milliohms
+# Common values: 10.0 mΩ (default), 5.0 mΩ, 7.5 mΩ, etc.
+# This affects current, capacity, and charge counter calculations.
+# ----------------------------------------------------------------------
+SENSE_RESISTOR_MOHM = 10.0   # change this to match your hardware
 
-# Address map for MAX77705 blocks
-# I2C block addresses (7-bit)
-I2C_BLOCKS = {0x25: "MUIC", 0x36: "Fuel Gauge", 0x62: "Debug", 0x66: "PMIC", 0x69: "Charger"}
+# I2C block addresses (7‑bit)
+I2C_BLOCKS = {
+    0x25: "MUIC",
+    0x36: "Fuel Gauge",
+    0x62: "Debug",
+    0x66: "PMIC",
+    0x69: "Charger"
+}
 
-# --- Register decode functions ---
-def scale_vcell(raw):
-    # Matches the C driver logic for VCELL and similar registers
-    low12 = raw & 0xFFF
-    high4 = (raw & 0xF000) >> 4
-    temp = low12 * 78125
-    vcell = temp // 1_000_000
-    temp2 = high4 * 78125
-    vcell += (temp2 // 1_000_000) << 4
-    return vcell
+# ----------------------------------------------------------------------
+# Helper decode functions for Fuel Gauge (MAX17050)
+# ----------------------------------------------------------------------
 
-def scale_soc(raw):
-    return raw / 256.0
+def decode_status_reg(value):
+    bits = {
+        "POR": (value >> 0) & 1,
+        "Imn": (value >> 1) & 1,
+        "Imx": (value >> 2) & 1,
+        "Vmn": (value >> 3) & 1,
+        "Vmx": (value >> 4) & 1,
+        "Tmn": (value >> 5) & 1,
+        "Tmx": (value >> 6) & 1,
+    }
+    return f"Status: {', '.join(f'{k}={v}' for k, v in bits.items())}"
 
-def scale_temp(raw):
-    return raw / 256.0 * 10 / 25.6
-
-def scale_remcap(raw):
-    return raw * FG_RESISTOR / 2
-
-def scale_current(raw):
-    val = raw if raw < 0x8000 else raw - 0x10000
-    return val * 15625 * FG_RESISTOR / 100000
-
-def scale_time_to_empty(raw):
-    return raw * 5.625 / 3600
-
-def scale_fullsocthr(raw):
-    return ((raw >> 8) * 100 + (raw & 0xFF) * 100 / 256) / 10
-
-def scale_cycles(raw):
-    return raw / 256
-
-def decode_salrt_threshold(raw):
-    max_soc = (raw >> 8) & 0xFF
-    min_soc = raw & 0xFF
-    return {'max_soc': max_soc, 'min_soc': min_soc}
+def decode_soc_status(raw):
+    """
+    MAX17050 SOC_STATUS register (0x04)
+    High byte: SOC in 1/2% units (0‑200)
+    Low byte: flags (RelDt2, DNR, EDet)
+    """
+    high = (raw >> 8) & 0xFF
+    low = raw & 0xFF
+    soc = high / 2.0
+    flags = []
+    if low & 0x80: flags.append("RelDt2")
+    if low & 0x40: flags.append("DNR")
+    else: flags.append("DataReady")
+    if low & 0x20: flags.append("EDet")
+    return f"SOC = {soc:.1f}%  Flags: {','.join(flags)}"
 
 def decode_config_reg(raw):
-    soc_alert = raw & 0xF
-    therm_cfg = (raw >> 4) & 0xF
-    temp_alert = (raw >> 8) & 0xFF
-    return {
-        'value': raw,
-        'soc_alert': soc_alert,
-        'therm_cfg': therm_cfg,
-        'temp_alert': temp_alert
-    }
+    """CONFIG register (0x0C) for MAX17050"""
+    sleep = (raw >> 8) & 0xFF
+    alert = (raw >> 4) & 0x0F
+    ath = (raw >> 3) & 0x01
+    alert_type = "SOC change" if ath else "Voltage change"
+    return f"Sleep={sleep}, Alert={alert}% ({alert_type})"
 
-def decode_config2_reg(raw):
-    # Let's assume bit 0 is auto_discharge (adjust as needed for your chip)
-    auto_discharge = (raw & 0x1)
-    return {
-        'value': raw,
-        'auto_discharge': auto_discharge
-    }
+def decode_table_cmd(raw):
+    """TABLE_CMD register (0x3E) – used to unlock OCV table"""
+    if raw == 0x4A57:
+        return "Unlock table (\"JW\")"
+    mv = 319.5 + raw * 0.0703125
+    return f"OCV = {mv:.1f} mV"
 
-# --- Register maps for each block ---
+def scale_capacity(raw):
+    """
+    Capacity in mAh = raw * 0.5 * (10 / Rsense_mΩ)
+    Because the internal calculation assumes 10 mΩ sense resistor.
+    """
+    return raw * 0.5 * (10.0 / SENSE_RESISTOR_MOHM)
+
+def scale_current(raw):
+    """
+    Current in mA = signed(raw) * 1562500 / (Rsense_uΩ * gain)
+    gain = 2 (default for 10 mΩ), but we simplify by using the Rsense factor.
+    """
+    val = raw if raw < 0x8000 else raw - 0x10000   # signed 16‑bit
+    # The factor 1562500 comes from the driver; we multiply by (10/Rsense) to compensate.
+    rsense_ratio = 10.0 / SENSE_RESISTOR_MOHM
+    return val * 15625 * rsense_ratio / 1000   # result in mA
+
+# ----------------------------------------------------------------------
+# Fuel Gauge register map (MAX17050) – corrected for realistic decoding
+# ----------------------------------------------------------------------
+
 FUELGAUGE_REGISTERS = {
-    0x00: ("STATUS_REG", None, (0, 0xFFFF), lambda x: f"Status: {decode_status_reg(x)}"),
-    0x01: ("VALRT_THRESHOLD_REG", None, (0, 0xFFFF), lambda x: f"Voltage Alert: Max={(x >> 8) * 20} mV, Min={(x & 0xFF) * 20} mV"),
-    0x02: ("TALRT_THRESHOLD_REG", None, (0, 0xFFFF), lambda x: f"Temperature Alert: Max={(x >> 8) / 256:.1f}°C, Min={(x & 0xFF) / 256:.1f}°C"),
-    0x03: ("SALRT_THRESHOLD_REG", None, (0, 0xFFFF), lambda x: f"SOC Alert: Max={(x >> 8) / 256:.1f}%, Min={(x & 0xFF) / 256:.1f}%"),
-    0x05: ("REMCAP_REP_REG", None, (0, 0xFFFF), lambda x: f"Reported Remaining Capacity: {x * 0.5:.1f} mAh"),
-    0x06: ("SOCREP_REG", (0, 100), (0, 0xFFFF), lambda x: f"Reported State of Charge: {x / 256:.1f}%"),
-    0x08: ("TEMPERATURE_REG", (-20, 60), (0, 0xFFFF), lambda x: f"Temperature: {((x >> 8) * 0.125) - 64:.1f}°C (Raw: 0x{x:04X})"),
-    0x09: ("VCELL_REG", (3000, 4500), (0, 0xFFFF), lambda x: f"Cell Voltage: {x * 0.078125:.2f} mV"),
-    0x0A: ("CURRENT_REG", (-3000, 3000), (-32768, 32767), lambda x: f"Current: {(x if x < 0x8000 else x - 0x10000) * 1.5625:.1f} µA"),
-    0x0B: ("AVG_CURRENT_REG", (-3000, 3000), (-32768, 32767),lambda x: f"Average Current: {(x if x < 0x8000 else x - 0x10000) * 1.5625:.1f} µA"),
-    0x0D: ("SOCMIX_REG", (0, 100), (0, 0xFFFF), lambda x: f"Mixed SOC: {min(x / 256, 100):.1f}%"),
-    0x0E: ("SOCAV_REG", (0, 100), (0, 0xFFFF), lambda x: f"Average SOC: {x / 256:.1f}%"),
-    0x0F: ("REMCAP_MIX_REG", None, (0, 0xFFFF), lambda x: f"Mixed Remaining Capacity: {x * 0.5:.1f} mAh"),
-    0x10: ("FULLCAP_REG", None, (0, 0xFFFF), lambda x: f"Full Capacity: {x * 0.5:.1f} mAh"),
+    0x00: ("STATUS_REG", None, (0, 0xFFFF), decode_status_reg),
+    0x02: ("VCELL_REG", (3000, 4500), (0, 0xFFFF), lambda x: f"Cell Voltage: {x * 0.078125:.2f} mV"),
+    0x04: ("SOC_STATUS", (0, 100), (0, 0xFFFF), decode_soc_status),
+    0x06: ("MODE_REG", None, (0, 0xFFFF), lambda x: f"Mode: 0x{x:04X}"),
+    0x08: ("VERSION_REG", None, (0, 0xFFFF), lambda x: f"Version: 0x{x:04X}"),
+    0x0A: ("HIBRT_REG", None, (0, 0xFFFF), lambda x: f"HibRt: 0x{x:04X}"),
+    0x0C: ("CONFIG_REG", None, (0, 0xFFFF), decode_config_reg),
+    0x0E: ("VALRT_REG", (3000, 4500), (0, 0xFFFF), lambda x: f"Voltage Alert: {x * 0.078125:.2f} mV"),
+    0x10: ("CRATE_REG", None, (-32768, 32767), lambda x: f"C/rate: {x * 0.20833:.1f}%"),
+    0x14: ("TEST_REG", None, (0, 0xFFFF), lambda x: f"Test: 0x{x:04X}"),
+    0x18: ("VRESET_ID_REG", None, (0, 0xFFFF), lambda x: f"VReset ID: 0x{x:04X}"),
+    0x1A: ("TEMPERATURE_REG", (-20, 60), (0, 0xFFFF), lambda x: f"Temperature: {x / 10.0:.1f}°C"),   # correct
+    0x3E: ("TABLE_CMD", None, (0, 0xFFFF), decode_table_cmd),
+
+    # Additional MAX77705/MAX17050 registers (many are common)
+    0x05: ("REMCAP_REP_REG", None, (0, 0xFFFF), lambda x: f"Reported Remaining Capacity: {scale_capacity(x):.1f} mAh"),
+    0x06: ("SOCREP_REG", (0, 100), (0, 0xFFFF), lambda x: f"Reported SOC: {x / 256.0:.1f}%"),
+    0x0D: ("SOCMIX_REG", (0, 100), (0, 0xFFFF), lambda x: f"Mixed SOC: {min(x / 256.0, 100):.1f}%"),
+    0x0E: ("SOCAV_REG", (0, 100), (0, 0xFFFF), lambda x: f"Average SOC: {x / 256.0:.1f}%"),
+    0x0F: ("REMCAP_MIX_REG", None, (0, 0xFFFF), lambda x: f"Mixed Remaining Capacity: {scale_capacity(x):.1f} mAh"),
+    0x10: ("FULLCAP_REG", None, (0, 0xFFFF), lambda x: f"Full Capacity: {scale_capacity(x):.1f} mAh"),
     0x11: ("TIME_TO_EMPTY_REG", None, (0, 0xFFFF), lambda x: f"Time to Empty: {x * 5.625 / 3600:.2f} hours"),
-    0x13: ("FULLSOCTHR_REG", None, (0, 0xFFFF), lambda x: f"Full SOC Threshold: {x / 256:.2f}%"),
+    0x13: ("FULLSOCTHR_REG", None, (0, 0xFFFF), lambda x: f"Full SOC Threshold: {x / 256.0:.2f}%"),
     0x15: ("RFAST_REG", None, (0, 0xFFFF), lambda x: f"Fast Resistance: 0x{x:04X}"),
-    0x16: ("AVR_TEMPERATURE_REG", (-20, 60), (0, 0xFFFF), lambda x: f"Average Temperature: {((x >> 8) * 0.125) - 64:.1f}°C (Raw: 0x{x:04X})"),
-    0x17: ("CYCLES_REG", (0, 1000), (0, 0xFFFF), lambda x: f"Cycle Count: {x / 256:.2f}"),
-    0x18: ("DESIGNCAP_REG", None, (0, 0xFFFF), lambda x: f"Design Capacity: {x * 0.5:.1f} mAh"),
-    0x19: ("AVR_VCELL_REG", (3000, 4500), (0, 0xFFFF), lambda x: f"Average Cell Voltage: {x * 0.078125:.2f} mV"),
-    0x1D: ("CONFIG_REG", None, (0, 0xFFFF), lambda x: f"Config: {decode_config_reg(x)}"),
-    0x1E: ("ICHGTERM_REG", None, (0, 0xFFFF), lambda x: f"Charge Termination Current: {(x if x < 0x8000 else x - 0x10000) * 1.5625 / 1000:.2f} mA"),
-    0x1F: ("REMCAP_AV_REG", None, (0, 0xFFFF), lambda x: f"Average Remaining Capacity: {x * 0.5:.2f} mAh"),
-    0x23: ("FULLCAP_NOM_REG", None, (0, 0xFFFF), lambda x: f"Nominal Full Capacity: {x * 0.5:.1f} mAh"),
+    0x16: ("AVR_TEMPERATURE_REG", (-20, 60), (0, 0xFFFF), lambda x: f"Avg Temperature: {((x >> 8) * 0.125) - 64:.1f}°C (Raw: 0x{x:04X})"),
+    0x17: ("CYCLES_REG", (0, 1000), (0, 0xFFFF), lambda x: f"Cycle Count: {x / 256.0:.2f}"),
+    0x18: ("DESIGNCAP_REG", None, (0, 0xFFFF), lambda x: f"Design Capacity: {scale_capacity(x):.1f} mAh"),
+    0x19: ("AVR_VCELL_REG", (3000, 4500), (0, 0xFFFF), lambda x: f"Avg Cell Voltage: {x * 0.078125:.2f} mV"),
+    0x1D: ("CONFIG_REG2", None, (0, 0xFFFF), lambda x: f"Config2: 0x{x:04X}"),
+    0x1E: ("ICHGTERM_REG", None, (0, 0xFFFF), lambda x: f"Charge Termination Current: {scale_current(x):.2f} mA"),
+    0x1F: ("REMCAP_AV_REG", None, (0, 0xFFFF), lambda x: f"Avg Remaining Capacity: {scale_capacity(x):.2f} mAh"),
+    0x23: ("FULLCAP_NOM_REG", None, (0, 0xFFFF), lambda x: f"Nominal Full Capacity: {scale_capacity(x):.1f} mAh"),
     0x2B: ("MISCCFG_REG", None, (0, 0xFFFF), lambda x: f"Misc Config: 0x{x:04X}"),
-    0x35: ("FULLCAP_REP_REG", None, (0, 0xFFFF), lambda x: f"Reported Full Capacity: {x * 0.5:.1f} mAh"),
-    0x43: ("ISYS_REG", (-100, 100), (-32768, 32767), lambda x: f"System Current: {(x if x < 0x8000 else x - 0x10000) * 1.5625 / 1000:.2f} mA"),
-    0x4B: ("AVGISYS_REG", (-100, 100), (-32768, 32767), lambda x: f"Average System Current: {(x if x < 0x8000 else x - 0x10000) * 1.5625 / 1000:.2f} mA"),
-    0x4D: ("QH_REG", None, (-32768, 32767), lambda x: f"Charge Counter: {(x if x < 0x8000 else x - 0x10000) * 0.5:.2f} mAh"),
+    0x35: ("FULLCAP_REP_REG", None, (0, 0xFFFF), lambda x: f"Reported Full Capacity: {scale_capacity(x):.1f} mAh"),
+    0x43: ("ISYS_REG", (-3000, 3000), (-32768, 32767), lambda x: f"System Current: {scale_current(x):.2f} mA"),
+    0x4B: ("AVGISYS_REG", (-3000, 3000), (-32768, 32767), lambda x: f"Avg System Current: {scale_current(x):.2f} mA"),
+    0x4D: ("QH_REG", None, (-32768, 32767), lambda x: f"Charge Counter: {scale_current(x) * 0.36:.2f} mAh"),
     0xB1: ("VSYS_REG", (3000, 4500), (0, 0xFFFF), lambda x: f"System Voltage: {x * 0.078125:.2f} mV"),
-    0xB2: ("TALRTTH2_REG/FG_INIT_RESULT_REG", None, (0, 0xFFFF), lambda x: f"Temp Alert Threshold 2 / Init Result: 0x{x:04X}"),
+    0xB2: ("TALRTTH2_REG", None, (0, 0xFFFF), lambda x: f"Temp Alert Threshold 2: 0x{x:04X}"),
     0xB3: ("VBYP_REG", (3000, 4500), (0, 0xFFFF), lambda x: f"Bypass Voltage: {x * 0.078125:.2f} mV"),
-    0xBB: ("CONFIG2_REG", None, (0, 0xFFFF), lambda x: f"Config 2: {decode_config2_reg(x)}"),
+    0xBB: ("CONFIG2_REG", None, (0, 0xFFFF), lambda x: f"Config 2: Auto Discharge={((x >> 8) & 0x1)}"),
     0xFB: ("VFOCV_REG", (3000, 4500), (0, 0xFFFF), lambda x: f"Fuel Gauge OCV: {x * 0.078125:.2f} mV"),
 }
+
+# ----------------------------------------------------------------------
+# PMIC, MUIC, Charger, Debug registers (unchanged from previous version)
+# ----------------------------------------------------------------------
+
 PMIC_REGISTERS = {
     0x00: ("PMICID1", None, (0, 0xFF), lambda x: f"PMIC ID: 0x{x:02X}"),
     0x01: ("PMICREV", None, (0, 0xFF), lambda x: f"PMIC Revision: 0x{x:02X}"),
@@ -142,7 +176,6 @@ MUIC_REGISTERS = {
     0x21: ("CONTROL1", None, (0, 0xFF), lambda x: f"Control 1: 0x{x:02X}"),
     0x22: ("CONTROL2", None, (0, 0xFF), lambda x: f"Control 2: 0x{x:02X}"),
     0x41: ("RESET", None, (0, 0xFF), lambda x: f"Reset: 0x{x:02X}"),
-
 }
 
 CHARGER_REGISTERS = {
@@ -178,7 +211,7 @@ DEBUG_REGISTERS = {
     0x01: ("DEBUG_REG1", None, (0, 0xFF), lambda x: f"Debug Register 1: 0x{x:02X}"),
 }
 
-# Block register mapping
+# Map block name to register dictionary
 BLOCK_REGISTERS = {
     "Fuel Gauge": FUELGAUGE_REGISTERS,
     "PMIC": PMIC_REGISTERS,
@@ -187,80 +220,9 @@ BLOCK_REGISTERS = {
     "Debug": DEBUG_REGISTERS,
 }
 
-def decode_status_reg(value):
-    bits = {
-        "POR": (value >> 0) & 1,
-        "Imn": (value >> 1) & 1,
-        "Imx": (value >> 2) & 1,
-        "Vmn": (value >> 3) & 1,
-        "Vmx": (value >> 4) & 1,
-        "Tmn": (value >> 5) & 1,
-        "Tmx": (value >> 6) & 1,
-    }
-    return f"Status: {', '.join(f'{k}={v}' for k, v in bits.items())}"
-
-def decode_config_reg(value):
-    soc_alert = (value >> 2) & 0x1F
-    therm_cfg = (value >> 8) & 0x3
-    temp_alert = (value >> 10) & 0x3F
-    return f"Config: SOC Alert={soc_alert}, ThermCfg={therm_cfg}, TempAlert={temp_alert}"
-
-def decode_config2_reg(value):
-    auto_discharge = (value >> 8) & 0x1
-    return f"Config 2: Auto Discharge={auto_discharge}"
-
-def color_value(val, limits):
-    if limits is None:
-        return str(val)
-    minval, maxval, label = limits
-    try:
-        v = float(val)
-    except Exception:
-        return str(val)
-    if v < minval or v > maxval:
-        return f"{Fore.RED}{val}{Style.RESET_ALL}"
-    elif (v-minval) < 0.1*(maxval-minval) or (maxval-v) < 0.1*(maxval-minval):
-        return f"{Fore.YELLOW}{val}{Style.RESET_ALL}"
-    else:
-        return f"{Fore.GREEN}{val}{Style.RESET_ALL}"
-
-def parse_csv(input_file):
-    latest = defaultdict(dict)
-    last_reg = {}
-    with open(input_file, 'r') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-        i = 0
-        while i < len(rows):
-            row = rows[i]
-            if not row['Data'].strip() or row['Data'] == '':
-                i += 1
-                continue
-            try:
-                addr7 = int(row['Address'], 16)
-                data = int(row['Data'], 16)
-                rw = row['Read/Write'].strip().lower()
-                block = I2C_BLOCKS.get(addr7, f"0x{addr7:02X}")
-                block_registers = BLOCK_REGISTERS.get(block, {})
-                if block == "Fuel Gauge" and rw == "read" and last_reg.get(block) in block_registers and i+1 < len(rows):
-                    if rows[i+1]['Data'].strip():
-                        data2 = int(rows[i+1]['Data'], 16)
-                        raw = (data << 8) | data2
-                        latest[block][last_reg[block]] = raw
-                        i += 1
-                    else:
-                        i += 1
-                        continue
-                else:
-                    if rw == "write":
-                        last_reg[block] = data
-                    elif rw == "read" and last_reg.get(block) in block_registers:
-                        latest[block][last_reg[block]] = data
-            except ValueError as e:
-                print(f"Skipping row {i+2} due to invalid data: {row}")
-            i += 1
-    return latest
-
+# ----------------------------------------------------------------------
+# Decoding helpers for MUIC, PMIC, Charger (unchanged)
+# ----------------------------------------------------------------------
 
 def decode_intsrc(value):
     bits = {
@@ -269,7 +231,7 @@ def decode_intsrc(value):
         "FG": (value >> 2) & 1,
         "USBC": (value >> 3) & 1,
     }
-    return f"{' | '.join(f'{k}' for k, v in bits.items() if v)}"
+    return ' | '.join(k for k, v in bits.items() if v)
 
 def decode_uic_int(value):
     bits = {
@@ -281,7 +243,7 @@ def decode_uic_int(value):
         "CHGTypI": (value >> 1) & 1,
         "UIDADCI": (value >> 0) & 1,
     }
-    return f"{' | '.join(f'{k}' for k, v in bits.items() if v)}"
+    return ' | '.join(k for k, v in bits.items() if v)
 
 def decode_pd_int(value):
     bits = {
@@ -290,7 +252,7 @@ def decode_pd_int(value):
         "SSAccI": (value >> 1) & 1,
         "FCTIDI": (value >> 0) & 1,
     }
-    return f"{' | '.join(f'{k}' for k, v in bits.items() if v)}"
+    return ' | '.join(k for k, v in bits.items() if v)
 
 def decode_usbc_status1(value):
     vbadc = (value >> 4) & 0xF
@@ -306,8 +268,10 @@ def decode_bc_status(value):
 
 def decode_cc_status0(value):
     cc_pin_stat = (value >> 6) & 0x3
-    cc_pin_stat_str = {0: "No Connection", 1: "Sink", 2: "Source", 3: "Audio Accessory",
-                       4: "Debug Accessory", 5: "Error", 6: "Disabled", 7: "RFU"}.get(cc_pin_stat, "Unknown")
+    cc_pin_stat_str = {
+        0: "No Connection", 1: "Sink", 2: "Source", 3: "Audio Accessory",
+        4: "Debug Accessory", 5: "Error", 6: "Disabled", 7: "RFU"
+    }.get(cc_pin_stat, "Unknown")
     cc_stat = value & 0x7
     return f"CC Pin State={cc_pin_stat_str}, CC Status=0x{cc_stat:02X}"
 
@@ -333,42 +297,103 @@ def decode_chg_int_mask(value):
         "TOPOFF_M": (value >> 6) & 1,
         "OVP_M": (value >> 7) & 1,
     }
-    return "<br>".join(f"{k}={'unmasked' if v == 0 else 'masked'}: {k.replace('_M', '')} interrupt {'enabled' if v == 0 else 'disabled'}" for k, v in bits.items())
+    lines = []
+    for k, v in bits.items():
+        if v == 0:
+            lines.append(f"{k} unmasked → {k.replace('_M','')} interrupt enabled")
+        else:
+            lines.append(f"{k} masked → {k.replace('_M','')} interrupt disabled")
+    return "<br>".join(lines)
+
+# ----------------------------------------------------------------------
+# CSV parsing and main
+# ----------------------------------------------------------------------
+
+def parse_csv(input_file):
+    latest = defaultdict(dict)
+    last_reg = {}
+    with open(input_file, 'r') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        i = 0
+        while i < len(rows):
+            row = rows[i]
+            if not row['Data'].strip():
+                i += 1
+                continue
+            try:
+                addr7 = int(row['Address'], 16)
+                data = int(row['Data'], 16)
+                rw = row['Read/Write'].strip().lower()
+                block = I2C_BLOCKS.get(addr7, f"0x{addr7:02X}")
+                block_regs = BLOCK_REGISTERS.get(block, {})
+                # Special handling for Fuel Gauge 16‑bit reads
+                if block == "Fuel Gauge" and rw == "read" and last_reg.get(block) in block_regs and i+1 < len(rows):
+                    next_row = rows[i+1]
+                    if next_row['Data'].strip():
+                        data2 = int(next_row['Data'], 16)
+                        raw = (data << 8) | data2
+                        latest[block][last_reg[block]] = raw
+                        i += 1  # skip the second byte row
+                    else:
+                        i += 1
+                        continue
+                else:
+                    if rw == "write":
+                        last_reg[block] = data
+                    elif rw == "read" and last_reg.get(block) in block_regs:
+                        latest[block][last_reg[block]] = data
+            except (ValueError, KeyError) as e:
+                print(f"Skipping row {i+2} due to error: {e} – row: {row}")
+            i += 1
+    return latest
+
+def color_value(val, limits):
+    if limits is None:
+        return str(val)
+    minv, maxv, _ = limits
+    try:
+        v = float(val)
+    except:
+        return str(val)
+    if v < minv or v > maxv:
+        return f"{Fore.RED}{val}{Style.RESET_ALL}"
+    elif (v - minv) < 0.1 * (maxv - minv) or (maxv - v) < 0.1 * (maxv - minv):
+        return f"{Fore.YELLOW}{val}{Style.RESET_ALL}"
+    else:
+        return f"{Fore.GREEN}{val}{Style.RESET_ALL}"
 
 def print_summary(data):
     for block in sorted(data.keys()):
         print(f"\n-------------------- {block} --------------------")
         print(f"{'Register':<10} | {'Name':<20} | {'Raw':<8} | Decoded")
-        print("-" * 50)
-        block_registers = BLOCK_REGISTERS.get(block, {})
-        # First, print known registers (even if not read)
-        for reg in sorted(block_registers.keys()):
+        print("-" * 55)
+        block_regs = BLOCK_REGISTERS.get(block, {})
+        for reg in sorted(block_regs.keys()):
             if reg in data[block]:
-                name, limits, valid_range, decode = block_registers[reg]
+                name, limits, _, decode = block_regs[reg]
                 raw = data[block][reg]
                 decoded = decode(raw)
-                color = "green"
-                if limits and (raw < limits[0] or raw > limits[1]):
-                    color = "red"
-                elif limits and (raw < limits[0] * 1.1 or raw > limits[1] * 0.9):
-                    color = "yellow"
-                print(f"{hex(reg):<10} | {name:<20} | {hex(raw):<8} | \033[1;{31 if color == 'red' else 33 if color == 'yellow' else 32}m{decoded}\033[0m")
+                # Add warning for implausible capacity
+                if block == "Fuel Gauge" and name in ("REMCAP_REP_REG", "FULLCAP_REG", "DESIGNCAP_REG"):
+                    capacity = scale_capacity(raw)
+                    if capacity > 6000:
+                        decoded += f"  ⚠️ capacity {capacity:.0f} mAh exceeds typical range"
+                print(f"{hex(reg):<10} | {name:<20} | {hex(raw):<8} | {decoded}")
             else:
-                name, _, _, _ = block_registers[reg]
+                name, _, _, _ = block_regs[reg]
                 print(f"{hex(reg):<10} | {name:<20} | {'----':<8} | (not read)")
-        # Then, print unknown registers from the data
+        # Unknown registers found in data but not in map
         for reg in sorted(data[block].keys()):
-            if reg not in block_registers:
+            if reg not in block_regs:
                 print(f"{hex(reg):<10} | {'(unknown)':<20} | {hex(data[block][reg]):<8} | (raw value)")
 
-
 def main():
-    parser = argparse.ArgumentParser(description="MAX77705 I2C CSV Summary Parser (all blocks, color-coded)")
-    parser.add_argument('input_file', help='Saleae-style CSV file')
+    parser = argparse.ArgumentParser(description="MAX77705/MAX77804 I2C CSV Summary Parser (corrected for MAX17050)")
+    parser.add_argument('input_file', help='Saleae‑style CSV file')
     args = parser.parse_args()
     latest = parse_csv(args.input_file)
     print_summary(latest)
 
 if __name__ == "__main__":
     main()
-
