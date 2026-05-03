@@ -33,12 +33,51 @@ Both scripts support:
   pip install requests pandas matplotlib colorama
 
 ## Usage
-1 Real‑time decoding with Saleae MCP
-1 Open Saleae Logic 2, start the MCP server (Extensions → MCP Server).
-- Edit the script variables:
--- CAPTURE_FILE – path to your .sal file.
--- BUSES – define SDA/SCL channel numbers for each I2C bus.
 
+### 1. Real‑time decoding with Saleae MCP
+
+1. Open Saleae Logic 2, start the MCP server (Extensions → MCP Server).
+2. Edit the script variables:
+   - `CAPTURE_FILE` – path to your `.sal` file.
+   - `BUSES` – define SDA/SCL channel numbers for each I2C bus.
+3. Run:
+
+   ```bash
+   python max77804saleaeMCP.py
+   ```
+The script will:
+- Load the capture.
+- Add I2C analyzers.
+- Print a color‑coded table of decoded transactions.
+- Save `decoded_transactions.csv` and `unknown_addresses.csv`.
+- Generate a device activity plot (`device_activity.png`).
+
+### 2. Offline CSV parsing
+
+Export an I2C analyzer as CSV from Saleae (use radix type 3 for hex). Then run:
+```
+python max77705parser.py batt-power-on.csv
+```
+
+
+Output is a register‑by‑register summary for each I2C block (Fuel Gauge, PMIC, MUIC, Charger).
+
+For more details, see the code comments and the [MAX77705 datasheet](https://www.maximintegrated.com/en/products/power/battery-management/MAX77705.html) for register definitions.
+
+## License
+
+MIT License – free for personal and commercial use.
+
+## Author
+
+James Damewood  
+Last updated: 2025
+
+
+
+
+
+Generate a device activity plot (device_activity.png).
 *For more details, see the code comments and the [MAX77705 datasheet](https://www.maximintegrated.com/en/products/power/battery-management/MAX77705.html) for register definitions.*
 
 
