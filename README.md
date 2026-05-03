@@ -50,3 +50,6 @@ Pull requests and issue reports are welcome! Please include sample register dump
 ---
 
 *For more details, see the code comments and the [MAX77705 datasheet](https://www.maximintegrated.com/en/products/power/battery-management/MAX77705.html) for register definitions.*
+
+
+# MAX77804 Power Management Register Parser using Saleae MCP remote features to read .sal files into i2c parsed data.
