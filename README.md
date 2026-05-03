@@ -1,53 +1,43 @@
-# MAX77705 Power Management Register Parser
+# MAX77705 / MAX77804 I2C Protocol Analyzer
 
-**max77705parser.py** is a Python 3 command-line tool for parsing and decoding register dumps from Samsung MAX77705-based power management systems. It reads CSV-formatted register snapshots from devices such as smartphones or tablets, and outputs a clear, human-readable summary of the charger, fuel gauge, MUIC (USB-C), and PMIC subsystems.
+Tools to decode and analyze I2C traffic from Maxim MAX77705/MAX77804 Power Management ICs, including fuel gauge, MUIC (USB‑C), charger, PMIC, and RGB LED controller.
 
-## Features
+## Overview
 
-- **Decodes raw register values** for MAX77705 and related power management ICs.
-- **Interprets and labels registers** for charger, fuel gauge, MUIC (USB-C), and PMIC sections.
-- **Highlights abnormal readings** and unknown registers for easier troubleshooting.
-- **Outputs a formatted summary** for quick diagnostics and log sharing.
+This repository contains two main scripts:
 
-## Example Output
-```
--------------------- Fuel Gauge --------------------
-Register   | Name                 | Raw      | Decoded
---------------------------------------------------
-0x0        | STATUS_REG           | 0x8000   | Status: POR=0, Imn=0, Imx=0, Vmn=0, Vmx=0, Tmn=0, Tmx=0
-0x2        | VCELL_REG            | 0x807f   | Cell Voltage: 2569.92 mV
-0x4        | SOC_STATUS           | 0x19     | SOC = 0.0%  Flags: DataReady
-0x5        | REMCAP_REP_REG       | 0xdf10   | Reported Remaining Capacity: 28552.0 mAh  ⚠️ capacity 28552 mAh exceeds typical range
-0x6        | SOCREP_REG           | 0x2460   | Reported SOC: 36.4%
-0x8        | VERSION_REG          | 0xcd1d   | Version: 0xCD1D
-0xa        | HIBRT_REG            | 0xa600   | HibRt: 0xA600
-0xc        | CONFIG_REG           | 0x400    | Sleep=4, Alert=0% (Voltage change)
-0xd        | SOCMIX_REG           | 0x7e5f   | Mixed SOC: 100.0%
-0xe        | SOCAV_REG            | 0x3460   | Average SOC: 52.4%
-0xf        | REMCAP_MIX_REG       | 0xe110   | Mixed Remaining Capacity: 28808.0 mAh
-0x10       | FULLCAP_REG          | 0x8911   | Full Capacity: 17544.5 mAh  ⚠️ capacity 17544 mAh exceeds typical range
-```
-## Use Cases
-```
-- **Battery and charging diagnostics** for embedded developers and repair technicians.
-- **Automated test logs** for hardware validation.
-- **Reverse engineering** of power management behavior in consumer electronics.
+- **`max77804saleaeMCP.py`** – Connects to Saleae Logic 2 via MCP (Model Context Protocol), loads a `.sal` capture, exports I2C transactions, and decodes them in real‑time with color‑coded output.  
+- **`max77705parser.py`** – Parses a Saleae‑exported CSV file (e.g., `batt‑power‑on.csv`) and produces a detailed register‑by‑register decoded summary.
 
-## Usage
-```
-python3 max77705parser.py <register_dump.csv>
-```
+Both scripts support:
+- Fuel Gauge (MAX17050) – voltage, current, temperature, SOC, capacity, cycle count, etc.
+- PMIC (MAX77705) – charger interrupts, flash/torch control, input current limit, etc.
+- MUIC (USB‑C controller) – CC status, VBUS detection, PD interrupts, accessory detection.
+- RGB LED controller – LED enable, brightness, blink patterns (address 0x48).
 
+## Files
+
+| File | Description |
+|------|-------------|
+| `max77804saleaeMCP.py` | Live I2C decoder using Saleae MCP server |
+| `max77705parser.py` | Post‑processing of Saleae CSV export |
+| `batt‑power‑on.csv` | Example I2C capture (Saleae CSV format) |
+| `README.md` | This file |
 
 ## Requirements
 
-- Python 3.x
-
-## Contributing
-
-Pull requests and issue reports are welcome! Please include sample register dumps if reporting parsing errors.
-
----
+- Python 3.7+
+- Saleae Logic 2 (for the MCP script)
+- Python packages:
+  ```bash
+  pip install requests pandas matplotlib colorama
+```
+## Usage
+1 Real‑time decoding with Saleae MCP
+- Open Saleae Logic 2, start the MCP server (Extensions → MCP Server).
+- Edit the script variables:
+-- CAPTURE_FILE – path to your .sal file.
+-- BUSES – define SDA/SCL channel numbers for each I2C bus.
 
 *For more details, see the code comments and the [MAX77705 datasheet](https://www.maximintegrated.com/en/products/power/battery-management/MAX77705.html) for register definitions.*
 
