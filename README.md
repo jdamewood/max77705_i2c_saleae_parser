@@ -31,7 +31,7 @@ Both scripts support:
 - Python packages:
   ```bash
   pip install requests pandas matplotlib colorama
-```
+
 ## Usage
 1 Real‑time decoding with Saleae MCP
 - Open Saleae Logic 2, start the MCP server (Extensions → MCP Server).
